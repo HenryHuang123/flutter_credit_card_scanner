@@ -1,3 +1,5 @@
+🇵🇸 In solidarity with Palestine and all the free people of the world 🇵🇸
+
 ## CameraScannerWidget
 
 **Description:**
@@ -20,6 +22,7 @@ Witness the magic in action! 🎥✨
 https://github.com/user-attachments/assets/ff6e818c-a65c-4bff-bb95-cbaef2368a23
 
 **Key Features:**
+
 - 📱 Cross-platform compatibility (iOS & Android)
 - 🚀 Lightning-fast credit card recognition
 - 🔒 Secure, on-device processing
@@ -27,21 +30,21 @@ https://github.com/user-attachments/assets/ff6e818c-a65c-4bff-bb95-cbaef2368a23
 
 **Input Parameters:**
 
-* **`onScan`** (required): Your gateway to extracted card data! This callback function receives the `BuildContext` and a `CreditCardModel` object containing the juicy details (number, holder name, expiration month, expiration year) when a card is successfully scanned. 
-* **`loadingHolder`** (required): Keep your users engaged! Specify a widget to display during camera initialization. 
-* **`onNoCamera`** (required): Gracefully handle camera unavailability with this callback function.
-* **`aspectRatio`** (optional): Fine-tune your preview! Set the aspect ratio of the camera view (defaults to device screen ratio).
-* **`cardNumber`** (optional): Toggle card number scanning (default: true).
-* **`cardHolder`** (optional): Enable/disable cardholder name extraction (default: true).
-* **`cardExpiryDate`** (optional): Control expiry date scanning (default: true).
-* **`useLuhnValidation`** (optional): Enable/disable Luhn validation (default: true).
-* **`durationOfNextFrame`** (optional): The duration of the next frame. This can be used to slow down the camera scanning and process the image so it will scan and wait for the next frame to be processed based on the duration. Default is null which means the camera will scan as fast as possible.
-* **`resolutionPreset`** (optional): The resolution preset for the camera. Defaults to [ResolutionPreset.high]. This can be used to set the resolution of the camera to a lower resolution to improve performance. Depends on the targeted platform it can be ResolutionPreset.low, ResolutionPreset.medium, ResolutionPreset.high, ResolutionPreset.veryHigh, ResolutionPreset.ultraHigh, ResolutionPreset.max.
-
+- **`onScan`** (required): Your gateway to extracted card data! This callback function receives the `BuildContext` and a `CreditCardModel` object containing the juicy details (number, holder name, expiration month, expiration year) when a card is successfully scanned.
+- **`loadingHolder`** (required): Keep your users engaged! Specify a widget to display during camera initialization.
+- **`onNoCamera`** (required): Gracefully handle camera unavailability with this callback function.
+- **`aspectRatio`** (optional): Fine-tune your preview! Set the aspect ratio of the camera view (defaults to device screen ratio).
+- **`cardNumber`** (optional): Toggle card number scanning (default: true).
+- **`cardHolder`** (optional): Enable/disable cardholder name extraction (default: true).
+- **`cardExpiryDate`** (optional): Control expiry date scanning (default: true).
+- **`useLuhnValidation`** (optional): Enable/disable Luhn validation (default: true).
+- **`durationOfNextFrame`** (optional): The duration of the next frame. This can be used to slow down the camera scanning and process the image so it will scan and wait for the next frame to be processed based on the duration. Default is null which means the camera will scan as fast as possible.
+- **`resolutionPreset`** (optional): The resolution preset for the camera. Defaults to [ResolutionPreset.high]. This can be used to set the resolution of the camera to a lower resolution to improve performance. Depends on the targeted platform it can be ResolutionPreset.low, ResolutionPreset.medium, ResolutionPreset.high, ResolutionPreset.veryHigh, ResolutionPreset.ultraHigh, ResolutionPreset.max.
 
 **Platform-Specific Setup:**
 
 Android Configuration:
+
 1. Ensure your app has integration with Firebase and Google ML Kit, YOU don't need it in IOS.
 2. Upgrade your Android experience! Update `android/app/build.gradle`:
 
@@ -59,13 +62,14 @@ android {
 ```xml
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.your_app_name">
-    
+
     <uses-permission android:name="android.permission.CAMERA" />
-    
+
 </manifest>
 ```
 
 iOS Configuration:
+
 1. Inform your users! Update `ios/Runner/Info.plist`:
 
 ```xml
@@ -75,9 +79,7 @@ iOS Configuration:
 
 2. Set the stage! Modify `ios/Podfile`:
 
-
 platform :ios, '15.5' // minimum deployment target
-
 
 Don't forget to run `pod install` in the `ios` directory!
 

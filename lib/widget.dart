@@ -134,12 +134,13 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
   bool scanning = false;
 
   late final _process = ProccessCreditCard(
-      useLuhnValidation: widget.useLuhnValidation,
-      checkCreditCardNumber: widget.cardNumber,
-      checkCreditCardName: widget.cardHolder,
-      checkCreditCardExpiryDate: widget.cardExpiryDate);
+    useLuhnValidation: widget.useLuhnValidation,
+    checkCreditCardNumber: widget.cardNumber,
+    checkCreditCardName: widget.cardHolder,
+    checkCreditCardExpiryDate: widget.cardExpiryDate,
+  );
   Color get colorOverlay =>
-      widget.colorOverlay ?? Colors.black.withOpacity(0.8);
+      widget.colorOverlay ?? Colors.black.withValues(alpha: 0.8);
 
   @override
   Widget build(BuildContext context) {
@@ -169,12 +170,14 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
 
                     Container(
                       decoration: ShapeDecoration(
-                        shape: widget.shapeBorder ??
+                        shape:
+                            widget.shapeBorder ??
                             OverlayShape(
-                                cutOutHeight: size.height * 0.3,
-                                cutOutWidth: size.width * 0.95,
-                                overlayColor: colorOverlay,
-                                borderRadius: 20),
+                              cutOutHeight: size.height * 0.3,
+                              cutOutWidth: size.width * 0.95,
+                              overlayColor: colorOverlay,
+                              borderRadius: 20,
+                            ),
                       ),
                     ),
                   ],
@@ -201,27 +204,30 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
 
-    availableCameras().then((v) async {
-      if (v.isEmpty) {
-        if (mounted) {
-          widget.onNoCamera();
-        }
-        return;
-      }
+    availableCameras()
+        .then((v) async {
+          if (v.isEmpty) {
+            if (mounted) {
+              widget.onNoCamera();
+            }
+            return;
+          }
 
-      final c = v.firstWhere(
-          (element) => element.lensDirection == CameraLensDirection.back);
+          final c = v.firstWhere(
+            (element) => element.lensDirection == CameraLensDirection.back,
+          );
 
-      _initializeCameraController(c);
-    }).onError((error, stackTrace) {
-      if (kDebugMode) {
-        log(error.toString());
-        log(stackTrace.toString());
-      }
-      if (mounted) {
-        widget.onNoCamera();
-      }
-    });
+          _initializeCameraController(c);
+        })
+        .onError((error, stackTrace) {
+          if (kDebugMode) {
+            log(error.toString());
+            log(stackTrace.toString());
+          }
+          if (mounted) {
+            widget.onNoCamera();
+          }
+        });
   }
 
   void onScanApple(List<apple.RecognizedText> list) {
@@ -280,22 +286,24 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
 
     final InputImageRotation imageRotation =
         InputImageRotationValue.fromRawValue(description.sensorOrientation) ??
-            InputImageRotation.rotation0deg;
+        InputImageRotation.rotation0deg;
 
-    final List<int> bytes =
-        image.planes.expand((plane) => plane.bytes).toList();
+    final List<int> bytes = image.planes
+        .expand((plane) => plane.bytes)
+        .toList();
 
     try {
       if (Platform.isIOS) {
         final textR = await appleVisionController.processImage(
-            apple.RecognizeTextData(
-                automaticallyDetectsLanguage: false,
-                languages: [const Locale('en', 'US')],
-                recognitionLevel: apple.RecognitionLevel.accurate,
-                image: Uint8List.fromList(bytes),
-                orientation: imageRotation.appleRotation,
-                imageSize:
-                    Size(image.width.toDouble(), image.height.toDouble())));
+          apple.RecognizeTextData(
+            automaticallyDetectsLanguage: false,
+            languages: [const Locale('en', 'US')],
+            recognitionLevel: apple.RecognitionLevel.accurate,
+            image: Uint8List.fromList(bytes),
+            orientation: imageRotation.appleRotation,
+            imageSize: Size(image.width.toDouble(), image.height.toDouble()),
+          ),
+        );
 
         if (textR?.isNotEmpty == true) {
           onScanApple(textR!);
@@ -347,7 +355,8 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
   /// This method sets up the camera with the given [description],
   /// initializes the controller, and begins processing images for text recognition.
   Future<void> _initializeCameraController(
-      CameraDescription description) async {
+    CameraDescription description,
+  ) async {
     final CameraController cameraController = CameraController(
       description,
       widget.resolutionPreset ??
