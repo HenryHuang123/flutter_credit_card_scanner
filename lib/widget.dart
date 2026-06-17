@@ -8,7 +8,6 @@ import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 
 import 'clipper.dart';
 import 'credit_card.dart';
@@ -119,13 +118,18 @@ class CameraScannerWidget extends StatefulWidget {
 
 class _CameraScannerWidgetState extends State<CameraScannerWidget>
     with WidgetsBindingObserver {
+  /// Platform channel used to run Android text recognition natively (ML Kit).
+  ///
+  /// ML Kit is only wired up on the Android side of the plugin, so it is never
+  /// installed on iOS, where Apple Vision is used instead.
+  static const MethodChannel _channel = MethodChannel(
+    'flutter_credit_card_scanner',
+  );
+
   final appleVisionController = apple.AppleVisionRecognizeTextController();
 
   /// The camera controller used to manage the device's camera.
   CameraController? controller;
-
-  /// Text recognizer used to process images and extract text.
-  final mlTextRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
 
   /// Notifier to manage the loading state of the camera.
   final valueLoading = ValueNotifier<bool>(true);
@@ -194,8 +198,6 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
       controller!.dispose();
     }
 
-    mlTextRecognizer.close();
-
     super.dispose();
   }
 
@@ -230,52 +232,27 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
         });
   }
 
-  void onScanApple(List<apple.RecognizedText> list) {
-    CreditCardModel? creditCardModel;
-
-    for (var item in list) {
-      for (var element in item.listText) {
-        _process.processNumber(element);
-        _process.processName(element);
-        _process.processDate(element);
-      }
-    }
-    creditCardModel = _process.getCreditCardModel();
-
-    if (creditCardModel != null) {
-      widget.onScan(context, creditCardModel);
-    }
-  }
-
-  /// Processes the recognized text to extract credit card information.
+  /// Processes the recognized text lines to extract credit card information.
   ///
-  /// This method analyzes the [RecognizedText] to identify the card number,
-  /// cardholder's name, and expiration date.
-  void onScanTextML(RecognizedText readText) {
-    // Call onScan callback if required information is found
-    CreditCardModel? creditCardModel;
-    for (TextBlock block in readText.blocks) {
-      for (TextLine line in block.lines) {
-        if (widget.debug) log(line.text);
+  /// Both recognizers — Apple Vision on iOS and ML Kit (native, via the platform
+  /// channel) on Android — produce a list of text lines that are fed through the
+  /// same extraction pipeline.
+  void onScanLines(List<String> lines) {
+    for (final line in lines) {
+      if (widget.debug) log(line);
 
-        _process.processNumber(line.text);
-
-        _process.processName(line.text);
-        _process.processDate(line.text);
-        // for (TextElement element in line.elements) {
-        //   final text = element.text;
-
-        // }
-      }
-
-      creditCardModel = _process.getCreditCardModel();
+      _process.processNumber(line);
+      _process.processName(line);
+      _process.processDate(line);
     }
+
+    final creditCardModel = _process.getCreditCardModel();
 
     if (creditCardModel != null) {
       if (widget.debug) {
-        log("Scanning catched card: " + creditCardModel.toString());
+        log("Scanning catched card: $creditCardModel");
       }
-      widget.onScan(context, creditCardModel);
+      if (mounted) widget.onScan(context, creditCardModel);
     }
   }
 
@@ -283,10 +260,6 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
     if (scanning) return;
 
     scanning = true;
-
-    final InputImageRotation imageRotation =
-        InputImageRotationValue.fromRawValue(description.sensorOrientation) ??
-        InputImageRotation.rotation0deg;
 
     final List<int> bytes = image.planes
         .expand((plane) => plane.bytes)
@@ -300,29 +273,32 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
             languages: [const Locale('en', 'US')],
             recognitionLevel: apple.RecognitionLevel.accurate,
             image: Uint8List.fromList(bytes),
-            orientation: imageRotation.appleRotation,
+            orientation: appleOrientationFromSensor(
+              description.sensorOrientation,
+            ),
             imageSize: Size(image.width.toDouble(), image.height.toDouble()),
           ),
         );
 
         if (textR?.isNotEmpty == true) {
-          onScanApple(textR!);
+          final lines = <String>[
+            for (final item in textR!) ...item.listText,
+          ];
+          onScanLines(lines);
         }
       } else {
-        final InputImage inputImage = InputImage.fromBytes(
-          bytes: Uint8List.fromList(bytes),
-          metadata: InputImageMetadata(
-            size: Size(image.width.toDouble(), image.height.toDouble()),
-            rotation: imageRotation,
-            format: InputImageFormat.yv12,
-            bytesPerRow: image.planes[0].bytesPerRow,
-          ),
-        );
+        // Android: run ML Kit text recognition natively through the plugin.
+        // The camera stream is configured as NV21 for Android (see
+        // [_initializeCameraController]).
+        final lines = await _channel.invokeListMethod<String>('processImage', {
+          'bytes': Uint8List.fromList(bytes),
+          'width': image.width,
+          'height': image.height,
+          'rotation': description.sensorOrientation,
+        });
 
-        final textR = await mlTextRecognizer.processImage(inputImage);
-
-        if (textR.text.isNotEmpty) {
-          onScanTextML(textR);
+        if (lines != null && lines.isNotEmpty) {
+          onScanLines(lines);
         }
       }
 

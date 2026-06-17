@@ -1,5 +1,4 @@
-import 'package:apple_vision_commons/src/enums/camera_facing.dart';
-import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:apple_vision_commons/apple_vision_commons.dart';
 
 /// Recognizes acceptable expiration date formats
 /// In plain english the steps are:
@@ -40,17 +39,21 @@ List<String> parseDate(String expDateStr) {
   return match[0]!.split('/');
 }
 
-extension InputImageRotationExt on InputImageRotation {
-  ImageOrientation get appleRotation {
-    switch (this) {
-      case InputImageRotation.rotation0deg:
-        return ImageOrientation.up;
-      case InputImageRotation.rotation90deg:
-        return ImageOrientation.up;
-      case InputImageRotation.rotation180deg:
-        return ImageOrientation.down;
-      case InputImageRotation.rotation270deg:
-        return ImageOrientation.downMirrored;
-    }
+/// Maps a camera sensor orientation (in degrees) to the Apple Vision
+/// [ImageOrientation] expected by the iOS text recognizer.
+///
+/// This intentionally avoids any ML Kit types so the iOS build does not pull in
+/// the ML Kit dependency. Android text recognition is handled natively through
+/// the platform channel instead.
+ImageOrientation appleOrientationFromSensor(int sensorOrientation) {
+  switch (sensorOrientation) {
+    case 180:
+      return ImageOrientation.down;
+    case 270:
+      return ImageOrientation.downMirrored;
+    case 0:
+    case 90:
+    default:
+      return ImageOrientation.up;
   }
 }
