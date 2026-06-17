@@ -297,6 +297,16 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
           'rotation': description.sensorOrientation,
         });
 
+        if (widget.debug) {
+          log(
+            'ML Kit frame ${image.width}x${image.height} '
+            'rotation=${description.sensorOrientation} '
+            'format=${image.format.group} '
+            'planes=${image.planes.length} -> '
+            '${lines?.length ?? 0} line(s): ${lines ?? const []}',
+          );
+        }
+
         if (lines != null && lines.isNotEmpty) {
           onScanLines(lines);
         }

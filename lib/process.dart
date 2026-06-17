@@ -87,7 +87,8 @@ class ProccessCreditCard {
       return null;
     }
 
-    if (t.expiryDate.isEmpty && checkCreditCardExpiryDate) {
+    if ((t.expirationMonth.isEmpty || t.expirationYear.isEmpty) &&
+        checkCreditCardExpiryDate) {
       return null;
     }
 
@@ -106,25 +107,25 @@ class ProccessCreditCard {
   ///
   /// Returns the extracted expiry date in MM/YY format, or null if no date is found.
   String? processDate(String text) {
-    if (text.contains(RegExp(r'\/')) &&
-        text.length > 4 &&
-        text.length < 10 &&
-        checkCreditCardExpiryDate) {
-      if (text.contains('/')) {
-        // remove everything that is not a digit and not /
+    if (checkCreditCardExpiryDate && text.contains('/')) {
+      // OCR — especially ML Kit on Android — tends to return whole lines that
+      // include surrounding labels such as "VALID THRU 05/27" or "GOOD THRU
+      // 12 / 28". Instead of requiring the line to be exactly a date, search
+      // for an MM/YY(YY) pattern anywhere in the text (tolerating spaces around
+      // the slash that the recognizer sometimes inserts).
+      for (final match in dateSearchFormat.allMatches(text)) {
+        String month = match.group(1)!;
+        String year = match.group(2)!;
 
-        String cardExpirationMonthT = removeNonDigits(text.split('/').first);
-        String cardExpirationYearT = removeNonDigits(text.split('/').last);
-
-        if (cardExpirationMonthT.length == 1) {
-          cardExpirationMonthT = '0$cardExpirationMonth';
+        if (month.length == 1) {
+          month = '0$month';
         }
 
-        if (cardExpirationYearT.length >= 4) {
-          cardExpirationYearT = cardExpirationYearT.substring(2);
+        if (year.length >= 4) {
+          year = year.substring(2);
         }
 
-        final fullText = '$cardExpirationMonthT/$cardExpirationYearT';
+        final fullText = '$month/$year';
 
         final x = _ccValidator.validateExpDate(fullText);
         if (x.isValid) {
@@ -136,15 +137,6 @@ class ProccessCreditCard {
           }
           return fullExpiryDate;
         }
-
-        // if (cardExpirationYearT.length == 2 &&
-        //     cardExpirationMonthT.length == 2) {
-        //   if (int.tryParse(cardExpirationYearT) != null &&
-        //       int.tryParse(cardExpirationMonthT) != null) {
-        //     cardExpirationMonth = cardExpirationMonthT;
-        //     cardExpirationYear = cardExpirationYearT;
-        //   }
-        // }
       }
     }
 

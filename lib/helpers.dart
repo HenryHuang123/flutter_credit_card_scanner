@@ -12,6 +12,17 @@ import 'package:apple_vision_commons/apple_vision_commons.dart';
 ///    any combo of 2-4 numeric characters
 final RegExp expDateFormat = RegExp(r'^((0?([1-9]))|1([0-2]))\/(\d{2,4})$');
 
+/// Searches for an expiration date pattern *anywhere* within a larger string.
+///
+/// Unlike [expDateFormat] (which requires the whole string to be a date), this
+/// finds `MM/YY` or `MM/YYYY` embedded in a longer OCR line such as
+/// "VALID THRU 05/27". It tolerates optional whitespace around the slash, which
+/// the text recognizer occasionally inserts (e.g. "05 / 27").
+///
+/// Group 1 captures the month (1-2 digits) and group 2 captures the year
+/// (2-4 digits). The month range is validated downstream by the card validator.
+final RegExp dateSearchFormat = RegExp(r'(\d{1,2})\s*\/\s*(\d{2,4})');
+
 /// Recognizes all whitespace characters
 final RegExp whiteSpaceRegex = RegExp(r'-|\s+\b|\b\s');
 
@@ -27,8 +38,9 @@ final RegExp whiteSpaceRegex = RegExp(r'-|\s+\b|\b\s');
 /// and remove any whitespace
 List<String> parseDate(String expDateStr) {
   // Replace hyphens with slashes and remove whitespaces
-  String formattedStr = expDateStr.replaceAll('-', '/')
-    ..replaceAll(whiteSpaceRegex, '');
+  String formattedStr = expDateStr
+      .replaceAll('-', '/')
+      .replaceAll(whiteSpaceRegex, '');
 
   Match? match = expDateFormat.firstMatch(formattedStr);
 
