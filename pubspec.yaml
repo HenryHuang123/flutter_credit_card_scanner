@@ -4,13 +4,18 @@ version: 0.12.0
 homepage: https://github.com/nimr77/Flutter_credit_card_scanner
 
 environment:
-  sdk: ^3.9.0
-  flutter: ">=3.3.0"
+  sdk: ">=3.10.0 <4.0.0"
+  flutter: ">=3.28.0"
 
 dependencies:
+  camera: ">=0.11.1 <0.11.2+1"          # 0.11.1/0.11.2 → Flutter 3.27
+  camera_android_camerax: ">=0.6.13 <0.6.17+1"   # 0.6.17 is last at Flutter 3.27 (0.6.17+1 → 3.29)
+  camera_avfoundation: ">=0.9.18 <0.9.21+2"      # 0.9.21+1 is last at Flutter 3.27 (0.9.21+2 → 3.29)
+  camera_platform_interface: ">=2.10.0 <2.11.0" # 2.10.x → Flutter 3.22
+  camera_web: ">=0.3.3 <0.3.5+1"               # avoid 3.5+4 (3.38)
+  flutter_plugin_android_lifecycle: ">=2.0.2 <2.0.30"  # avoid 2.0.35 (3.38)
   apple_vision_commons: ^0.0.3
   apple_vision_recognize_text: ^0.0.4
-  camera: ^0.12.0
   credit_card_validator: ^2.1.0
 
   flutter:
