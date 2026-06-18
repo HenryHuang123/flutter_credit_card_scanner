@@ -277,8 +277,22 @@ class ProccessCreditCard {
     for (final match in cardNumberSearch.allMatches(number)) {
       final candidate = removeNonDigits(match.group(0)!);
 
+      // When Luhn validation is disabled the caller has opted out of *all*
+      // number-validity gating — both the Luhn checksum and issuer-prefix
+      // recognition. Accept the first card-length digit run as-is and output
+      // it directly. The search regex already bounds the run to 13-19 digits,
+      // so no further checks are applied and no validator result is recorded.
+      if (!useLuhnValidation) {
+        if (candidate.length < 13 || candidate.length > 19) return null;
+        // Store a normalized, consistently grouped number instead of the raw
+        // OCR text so the output is independent of the original spacing.
+        cardNumber = groupCardDigits(candidate);
+        _v = null;
+        return cardNumber;
+      }
+
       final v = _ccValidator.validateCCNum(candidate,
-          ignoreLuhnValidation: !useLuhnValidation);
+          ignoreLuhnValidation: false);
 
       // Accept either a number the bundled validator fully recognises (known
       // issuer), or — since some valid cards use issuer prefixes it doesn't
