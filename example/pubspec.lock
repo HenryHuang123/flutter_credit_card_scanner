@@ -12,10 +12,11 @@ packages:
   apple_vision_recognize_text:
     dependency: transitive
     description:
-      name: apple_vision_recognize_text
-      sha256: b14e7cf8d9c41b0215100097587b4626fb855ababaabbafb6db7c34408eca5c3
-      url: "https://pub.dev"
-    source: hosted
+      path: "packages/apple_vision_recognize_text"
+      ref: c2e5fb08bd4f88241a5ef3c2cdb2b64bb325db13
+      resolved-ref: c2e5fb08bd4f88241a5ef3c2cdb2b64bb325db13
+      url: "https://github.com/HenryHuang123/apple_vision.git"
+    source: git
     version: "0.0.4"
   async:
     dependency: transitive

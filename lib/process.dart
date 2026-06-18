@@ -163,7 +163,11 @@ class ProccessCreditCard {
   ///
   /// Returns the extracted expiry date in MM/YY format, or null if no date is found.
   String? processDate(String text) {
-    if (checkCreditCardExpiryDate && text.contains('/')) {
+    if (!checkCreditCardExpiryDate) {
+      return fullExpiryDate.length > 4 ? fullExpiryDate : null;
+    }
+
+    if (text.contains('/')) {
       // OCR — especially ML Kit on Android — tends to return whole lines that
       // include surrounding labels such as "VALID THRU 05/27" or "GOOD THRU
       // 12 / 28". Instead of requiring the line to be exactly a date, search
@@ -193,6 +197,31 @@ class ProccessCreditCard {
         cardExpirationYear = year;
         return fullExpiryDate;
       }
+    }
+
+    // Tolerant fallback: when no slash-delimited date was found, the recognizer
+    // may have read the "/" in MM/YY as a digit (almost always 7 or 1),
+    // yielding an isolated 5-digit token such as "05727" or "05127". Treat a
+    // standalone, whitespace-delimited 5-digit run as MM<slash>YY when its
+    // middle digit is a misread slash (7 or 1) and the leading two digits form
+    // a valid month. The 5-digit token must be isolated (not adjacent to other
+    // digits), so this never fires on card-number groups.
+    for (final match in isolatedFiveDigits.allMatches(text)) {
+      final digits = match.group(1)!;
+      final middle = digits[2];
+      if (middle != '7' && middle != '1') continue;
+
+      final month = digits.substring(0, 2);
+      final year = digits.substring(3);
+
+      final monthNum = int.tryParse(month);
+      if (monthNum == null || monthNum < 1 || monthNum > 12) {
+        continue;
+      }
+
+      cardExpirationMonth = month;
+      cardExpirationYear = year;
+      return fullExpiryDate;
     }
 
     return fullExpiryDate.length > 4 ? fullExpiryDate : null;

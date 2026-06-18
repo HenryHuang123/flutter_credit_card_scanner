@@ -15,7 +15,14 @@ dependencies:
   camera_web: ">=0.3.3 <0.3.5+1"               # avoid 3.5+4 (3.38)
   flutter_plugin_android_lifecycle: ">=2.0.2 <2.0.30"  # avoid 2.0.35 (3.38)
   apple_vision_commons: ^0.0.3
-  apple_vision_recognize_text: ^0.0.4
+  # Forked to run Vision text recognition on a background queue instead of the
+  # platform main thread (upstream 0.0.4 blocks the UI thread, janking the
+  # camera preview whenever text is in frame).
+  apple_vision_recognize_text:
+    git:
+      url: https://github.com/HenryHuang123/apple_vision.git
+      ref: c2e5fb08bd4f88241a5ef3c2cdb2b64bb325db13
+      path: packages/apple_vision_recognize_text
   credit_card_validator: ^2.1.0
 
   flutter:
@@ -33,3 +40,4 @@ flutter:
         pluginClass: CreditCardScannerPlugin
       ios:
         pluginClass: CreditCardScannerPlugin
+publish_to: none

@@ -14,6 +14,24 @@ import 'credit_card.dart';
 import 'helpers.dart';
 import 'process.dart';
 
+// ---------------------------------------------------------------------------
+// Scan confirmation tuning.
+//
+// A single OCR frame is noisy, so a value is never trusted on first sight.
+// Instead the most recent [_kHistoryLength] detected card numbers and expiry
+// dates are kept independently, and a value is only "locked in" (and the
+// onScan callback fired) once the same value has been seen [_kRequiredMatches]
+// times. This filters out one-off misreads and stops the callback from firing
+// on every frame. Both are overridable per-widget via the constructor.
+// ---------------------------------------------------------------------------
+
+/// Number of times the same value must be detected before it is locked in.
+const int _kRequiredMatches = 2;
+
+/// How many recent detections of each field are remembered when looking for a
+/// repeated value.
+const int _kHistoryLength = 10;
+
 /// A widget that displays a live camera preview and scans for credit card information.
 ///
 /// This widget uses the device's camera to capture images and performs optical character
@@ -94,6 +112,17 @@ class CameraScannerWidget extends StatefulWidget {
   /// plenty for reading a stationary card.
   final int framesPerSecond;
 
+  /// Number of times the same value (card number or expiry date) must be
+  /// detected across frames before it is locked in and reported via [onScan].
+  ///
+  /// Raising this trades a little speed for fewer misreads. Defaults to
+  /// [_kRequiredMatches].
+  final int requiredMatches;
+
+  /// How many recent detections of each field are remembered when looking for a
+  /// repeated value. Defaults to [_kHistoryLength].
+  final int historyLength;
+
   /// The resolution preset for the camera. Defaults to [ResolutionPreset.high].
   ///
   /// This can be used to set the resolution of the camera to a lower resolution to improve performance.
@@ -120,6 +149,8 @@ class CameraScannerWidget extends StatefulWidget {
     this.durationOfNextFrame,
     this.resolutionPreset,
     this.framesPerSecond = 3,
+    this.requiredMatches = _kRequiredMatches,
+    this.historyLength = _kHistoryLength,
   });
 
   @override
@@ -136,7 +167,10 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
     'flutter_credit_card_scanner',
   );
 
-  final appleVisionController = apple.AppleVisionRecognizeTextController();
+  final appleVisionController = apple.AppleVisionRecognizeTextController(
+    minimumTextHeight: 0.1,
+    usesLanguageCorrection: false,
+  );
 
   /// The camera controller used to manage the device's camera.
   CameraController? controller;
@@ -157,12 +191,25 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
     milliseconds: (1000 / widget.framesPerSecond).round(),
   );
 
-  late final _process = ProccessCreditCard(
-    useLuhnValidation: widget.useLuhnValidation,
-    checkCreditCardNumber: widget.cardNumber,
-    checkCreditCardName: widget.cardHolder,
-    checkCreditCardExpiryDate: widget.cardExpiryDate,
-  );
+  /// Rolling history of recently detected card numbers / expiry dates (kept
+  /// independently). A value is locked in once it recurs [requiredMatches]
+  /// times within the last [historyLength] detections. See the file-level docs.
+  final List<String> _numberHistory = [];
+  final List<String> _dateHistory = [];
+
+  /// Values that have been confirmed (seen enough times) and will not change.
+  String? _lockedNumber;
+  String? _lockedMonth;
+  String? _lockedYear;
+
+  /// Most recently seen cardholder name. The name is not confirmation-gated
+  /// (it is optional for completion); the latest non-empty value is kept.
+  String _latestName = '';
+
+  /// Computes the scan-window crop rectangle and crops frames to it. Its
+  /// fractions also drive the on-screen overlay so the two stay in sync.
+  final ScanWindowCropper _cropper = const ScanWindowCropper();
+
   Color get colorOverlay =>
       widget.colorOverlay ?? Colors.black.withValues(alpha: 0.8);
 
@@ -197,8 +244,9 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
                         shape:
                             widget.shapeBorder ??
                             OverlayShape(
-                              cutOutHeight: size.height * 0.3,
-                              cutOutWidth: size.width * 0.95,
+                              cutOutHeight:
+                                  size.height * _cropper.heightFraction,
+                              cutOutWidth: size.width * _cropper.widthFraction,
                               overlayColor: colorOverlay,
                               borderRadius: 20,
                             ),
@@ -257,76 +305,107 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
   /// Both recognizers — Apple Vision on iOS and ML Kit (native, via the platform
   /// channel) on Android — produce a list of text lines that are fed through the
   /// same extraction pipeline.
-  void onScanLines(List<String> lines) {
-    for (final line in lines) {
-      if (widget.debug) log(line);
-
-      _process.processNumber(line);
-      _process.processName(line);
-      _process.processDate(line);
-    }
-
-    // ML Kit (and Apple Vision) frequently break a single card number or expiry
-    // date into several separate lines. Re-run number/date detection over the
-    // combined text so fragments such as "4111 1111" + "1111 1111" can be
-    // reassembled. Letters break a digit run and each candidate is still
-    // Luhn-validated, so joining the name/date lines in does not produce false
-    // positives. Only attempt this when the per-line pass came up empty so a
-    // value already found in isolation is never clobbered.
-    if (_process.cardNumber.isEmpty || _process.cardExpirationMonth.isEmpty) {
-      final joined = lines.join(' ');
-      if (_process.cardNumber.isEmpty) _process.processNumber(joined);
-      if (_process.cardExpirationMonth.isEmpty) _process.processDate(joined);
-    }
-
-    final creditCardModel = _process.getCreditCardModel();
-
-    if (creditCardModel != null) {
-      if (widget.debug) {
-        log("Scanning catched card: $creditCardModel");
+  Future<void> onScanLines(List<String> lines) async {
+    if (widget.debug) {
+      for (final line in lines) {
+        log(line);
       }
-      if (mounted) widget.onScan(context, creditCardModel);
+    }
+
+    // Run the regex + Luhn/validator extraction on a background isolate so the
+    // accept path does zero parsing work on the UI isolate (which is what made
+    // the preview janky whenever text was in view).
+    final result = await compute(
+      _parseLinesIsolate,
+      _ParseRequest(
+        lines: lines,
+        useLuhnValidation: widget.useLuhnValidation,
+        checkNumber: widget.cardNumber,
+        checkName: widget.cardHolder,
+        checkExpiry: widget.cardExpiryDate,
+      ),
+    );
+
+    if (!mounted) return;
+
+    _registerCandidate(result);
+  }
+
+  /// Feeds one frame's extracted candidates into the rolling histories, locks
+  /// in any value seen [CameraScannerWidget.requiredMatches] times, and reports
+  /// the card via [onScan] each time everything required is confirmed.
+  void _registerCandidate(_ParseResult result) {
+    if (widget.cardNumber &&
+        _lockedNumber == null &&
+        result.number.isNotEmpty) {
+      _record(_numberHistory, result.number);
+      if (_occurrences(_numberHistory, result.number) >=
+          widget.requiredMatches) {
+        _lockedNumber = result.number;
+      }
+    }
+
+    if (widget.cardExpiryDate &&
+        _lockedMonth == null &&
+        result.month.isNotEmpty &&
+        result.year.isNotEmpty) {
+      final key = '${result.month}/${result.year}';
+      _record(_dateHistory, key);
+      if (_occurrences(_dateHistory, key) >= widget.requiredMatches) {
+        _lockedMonth = result.month;
+        _lockedYear = result.year;
+      }
+    }
+
+    if (result.name.isNotEmpty) {
+      _latestName = result.name;
+    }
+
+    _maybeEmit();
+  }
+
+  /// Appends [value] to [history], capping it at [historyLength] by dropping the
+  /// oldest entry.
+  void _record(List<String> history, String value) {
+    history.add(value);
+    if (history.length > widget.historyLength) {
+      history.removeAt(0);
     }
   }
 
-  /// Converts a [CameraImage] into a tightly packed NV21 byte buffer for ML Kit.
-  ///
-  /// The camera stream is requested as NV21, but many Android devices ignore
-  /// that and deliver multi-plane YUV_420_888 instead. Passing those planes to
-  /// ML Kit as if they were NV21 (the previous behaviour) yields a buffer of
-  /// roughly the right size but the wrong layout — planar YUV rather than NV21's
-  /// interleaved V/U — which is why text was read but almost always wrong.
-  ///
-  /// This rebuilds a real NV21 buffer: the full Y (luminance) plane followed by
-  /// interleaved V,U chroma, honouring each plane's row and pixel strides so it
-  /// works for both planar and semi-planar device layouts.
-  ///
-  /// The conversion is a per-pixel pass over a full-resolution frame, so it runs
-  /// on a background isolate via [compute] to keep the camera preview smooth —
-  /// only the cheap extraction of plane bytes/strides happens on the UI isolate.
-  Future<Uint8List> _buildNv21(CameraImage image) {
-    // Single-plane frames are already NV21 (the format we asked for); the
-    // native side strips any row padding, so hand the bytes over unchanged and
-    // skip the isolate hop entirely.
-    if (image.planes.length < 3) {
-      return Future.value(image.planes.first.bytes);
-    }
+  /// Number of times [value] appears in [history].
+  int _occurrences(List<String> history, String value) =>
+      history.where((e) => e == value).length;
 
-    return compute(
-      _yuv420ToNv21Isolate,
-      _Nv21Frame(
-        width: image.width,
-        height: image.height,
-        yBytes: image.planes[0].bytes,
-        uBytes: image.planes[1].bytes,
-        vBytes: image.planes[2].bytes,
-        yRowStride: image.planes[0].bytesPerRow,
-        uRowStride: image.planes[1].bytesPerRow,
-        vRowStride: image.planes[2].bytesPerRow,
-        uPixelStride: image.planes[1].bytesPerPixel ?? 2,
-        vPixelStride: image.planes[2].bytesPerPixel ?? 2,
-      ),
+  /// Reports the confirmed card whenever every required field is locked in.
+  ///
+  /// This only ever calls the [onScan] callback — it never triggers a rebuild
+  /// of this widget, so the camera preview is untouched. After firing, the
+  /// histories and locks are cleared so the scanner immediately re-arms and can
+  /// confirm the next card (or re-confirm the current one) without any restart.
+  void _maybeEmit() {
+    if (widget.cardNumber && _lockedNumber == null) return;
+    if (widget.cardExpiryDate && _lockedMonth == null) return;
+
+    final model = CreditCardModel(
+      number: widget.cardNumber ? (_lockedNumber ?? '') : '',
+      holderName: widget.cardHolder ? _latestName : '',
+      expirationMonth: widget.cardExpiryDate ? (_lockedMonth ?? '') : '',
+      expirationYear: widget.cardExpiryDate ? (_lockedYear ?? '') : '',
     );
+
+    if (widget.debug) {
+      log('Scanning locked in card: $model');
+    }
+    if (mounted) widget.onScan(context, model);
+
+    // Re-arm for the next card.
+    _numberHistory.clear();
+    _dateHistory.clear();
+    _lockedNumber = null;
+    _lockedMonth = null;
+    _lockedYear = null;
+    _latestName = '';
   }
 
   void process(CameraImage image, CameraDescription description) async {
@@ -362,18 +441,20 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
 
     try {
       if (Platform.isIOS) {
-        // BGRA8888 on iOS is single-plane.
-        final Uint8List bytes = image.planes.first.bytes;
+        // Restrict Apple Vision to the scan window via regionOfInterest instead
+        // of cropping the buffer — Vision skips everything outside it, so the
+        // full frame is handed over untouched.
         final textR = await appleVisionController.processImage(
           apple.RecognizeTextData(
             automaticallyDetectsLanguage: false,
             languages: [const Locale('en', 'US')],
             recognitionLevel: apple.RecognitionLevel.accurate,
-            image: bytes,
+            image: image.planes.first.bytes,
             orientation: appleOrientationFromSensor(
               description.sensorOrientation,
             ),
             imageSize: Size(image.width.toDouble(), image.height.toDouble()),
+            regionOfInterest: _cropper.visionRegionOfInterest(),
           ),
         );
 
@@ -381,27 +462,31 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
           final lines = <String>[
             for (final item in textR!) ...item.listText,
           ];
-          onScanLines(lines);
+          await onScanLines(lines);
         }
       } else {
-        // Android: run ML Kit text recognition natively through the plugin.
-        // We request an NV21 stream, but many devices ignore that and deliver
-        // multi-plane YUV_420_888, so rebuild a guaranteed-packed NV21 buffer
-        // here before sending it across.
-        final Uint8List nv21 = await _buildNv21(image);
+        // Android: ML Kit has no region-of-interest, so crop to the scan window
+        // ourselves (on a background isolate). The result is packed NV21
+        // (stride == width).
+        final crop = _cropper.rectFor(
+          image.width,
+          image.height,
+          description.sensorOrientation,
+        );
+        final Uint8List cropped = await _cropper.crop(image, crop);
         final lines = await _channel.invokeListMethod<String>('processImage', {
-          'bytes': nv21,
-          'width': image.width,
-          'height': image.height,
-          // The buffer is packed (no row padding), so the stride equals width.
-          'bytesPerRow': image.width,
+          'bytes': cropped,
+          'width': crop.width,
+          'height': crop.height,
+          'bytesPerRow': crop.width,
           'rotation': description.sensorOrientation,
           'debug': widget.debug,
         });
 
         if (widget.debug) {
           log(
-            'ML Kit frame ${image.width}x${image.height} '
+            'ML Kit frame ${crop.width}x${crop.height} '
+            '(cropped from ${image.width}x${image.height}) '
             'rotation=${description.sensorOrientation} '
             'format=${image.format.group} '
             'planes=${image.planes.length} -> '
@@ -410,7 +495,7 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
         }
 
         if (lines != null && lines.isNotEmpty) {
-          onScanLines(lines);
+          await onScanLines(lines);
         }
       }
 
@@ -473,76 +558,76 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
   }
 }
 
-/// The plane bytes and strides of a single YUV_420_888 frame, extracted from a
-/// [CameraImage] into a form that can be sent across an isolate boundary
-/// (a [CameraImage] itself is not sendable).
-class _Nv21Frame {
-  final int width;
-  final int height;
-  final Uint8List yBytes;
-  final Uint8List uBytes;
-  final Uint8List vBytes;
-  final int yRowStride;
-  final int uRowStride;
-  final int vRowStride;
-  final int uPixelStride;
-  final int vPixelStride;
+/// One frame's recognized text lines plus the extraction flags, sent to the
+/// background isolate that parses them (see [_parseLinesIsolate]).
+class _ParseRequest {
+  final List<String> lines;
+  final bool useLuhnValidation;
+  final bool checkNumber;
+  final bool checkName;
+  final bool checkExpiry;
 
-  const _Nv21Frame({
-    required this.width,
-    required this.height,
-    required this.yBytes,
-    required this.uBytes,
-    required this.vBytes,
-    required this.yRowStride,
-    required this.uRowStride,
-    required this.vRowStride,
-    required this.uPixelStride,
-    required this.vPixelStride,
+  const _ParseRequest({
+    required this.lines,
+    required this.useLuhnValidation,
+    required this.checkNumber,
+    required this.checkName,
+    required this.checkExpiry,
   });
 }
 
-/// Rebuilds a tightly packed NV21 buffer from [frame]. Runs on a background
-/// isolate (see [_WidgetState._buildNv21]) so the per-pixel chroma interleave
-/// never blocks the UI isolate / camera preview.
-Uint8List _yuv420ToNv21Isolate(_Nv21Frame frame) {
-  final int width = frame.width;
-  final int height = frame.height;
-  final int ySize = width * height;
-  final Uint8List nv21 = Uint8List(ySize + ySize ~/ 2);
+/// The card fields extracted from a single frame. Empty strings mean "not found
+/// in this frame".
+class _ParseResult {
+  final String number;
+  final String name;
+  final String month;
+  final String year;
 
-  // Y plane — copy row by row, dropping any row-stride padding.
-  int dst = 0;
-  if (frame.yRowStride == width) {
-    nv21.setRange(0, ySize, frame.yBytes);
-    dst = ySize;
-  } else {
-    final Uint8List yBytes = frame.yBytes;
-    for (int row = 0; row < height; row++) {
-      final int start = row * frame.yRowStride;
-      nv21.setRange(dst, dst + width, yBytes, start);
-      dst += width;
-    }
+  const _ParseResult({
+    required this.number,
+    required this.name,
+    required this.month,
+    required this.year,
+  });
+}
+
+/// Extracts card fields from one frame's text lines. Runs on a background
+/// isolate via [compute] so no regex/Luhn validation happens on the UI isolate.
+///
+/// A fresh [ProccessCreditCard] is used per call so the result reflects only
+/// this frame — cross-frame confirmation is handled by the widget's rolling
+/// histories instead.
+_ParseResult _parseLinesIsolate(_ParseRequest req) {
+  final process = ProccessCreditCard(
+    useLuhnValidation: req.useLuhnValidation,
+    checkCreditCardNumber: req.checkNumber,
+    checkCreditCardName: req.checkName,
+    checkCreditCardExpiryDate: req.checkExpiry,
+  );
+
+  for (final line in req.lines) {
+    process.processNumber(line);
+    process.processName(line);
+    process.processDate(line);
   }
 
-  // Chroma — interleave as V, U (NV21 order), honouring row/pixel strides.
-  final Uint8List uBytes = frame.uBytes;
-  final Uint8List vBytes = frame.vBytes;
-  final int chromaHeight = height ~/ 2;
-  final int chromaWidth = width ~/ 2;
-
-  for (int row = 0; row < chromaHeight; row++) {
-    int uIndex = row * frame.uRowStride;
-    int vIndex = row * frame.vRowStride;
-    for (int col = 0; col < chromaWidth; col++) {
-      // Guard the last sample: on semi-planar layouts the V/U planes can be a
-      // byte short, which would otherwise throw a RangeError.
-      nv21[dst++] = vIndex < vBytes.length ? vBytes[vIndex] : 0;
-      nv21[dst++] = uIndex < uBytes.length ? uBytes[uIndex] : 0;
-      uIndex += frame.uPixelStride;
-      vIndex += frame.vPixelStride;
-    }
+  // ML Kit / Apple Vision frequently break a card number or expiry date across
+  // several lines. Re-run number/date detection over the combined text so
+  // fragments such as "4111 1111" + "1111 1111" can be reassembled. Letters
+  // break a digit run and each candidate is still Luhn-validated, so joining
+  // the lines does not produce false positives. Only attempt this when the
+  // per-line pass came up empty so a value already found is never clobbered.
+  if (process.cardNumber.isEmpty || process.cardExpirationMonth.isEmpty) {
+    final joined = req.lines.join(' ');
+    if (process.cardNumber.isEmpty) process.processNumber(joined);
+    if (process.cardExpirationMonth.isEmpty) process.processDate(joined);
   }
 
-  return nv21;
+  return _ParseResult(
+    number: process.cardNumber,
+    name: process.cardName,
+    month: process.cardExpirationMonth,
+    year: process.cardExpirationYear,
+  );
 }
