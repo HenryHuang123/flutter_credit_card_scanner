@@ -25,7 +25,7 @@ final RegExp expDateFormat = RegExp(r'^((0?([1-9]))|1([0-2]))\/(\d{2,4})$');
 ///
 /// Group 1 captures the month (1-2 digits) and group 2 captures the year
 /// (2-4 digits). The month range is validated downstream by the card validator.
-final RegExp dateSearchFormat = RegExp(r'(\d{1,2})\s*\/\s*(\d{2,4})');
+final RegExp dateSearchFormat = RegExp(r'(\d{1,2})\s*[\/\-]\s*(\d{2,4})');
 
 /// Searches for a credit-card-number candidate *anywhere* within a larger
 /// string.

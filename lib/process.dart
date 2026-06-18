@@ -41,7 +41,6 @@ bool isLuhnValid(String digits) {
 /// most likely represents. The mapping is **case-sensitive** on purpose: an
 /// upper-case "L" is typically a misread 7, whereas a lower-case "l" is a 1.
 const Map<String, String> _ocrDigitConfusions = {
-  'L': '7',
   'l': '1',
   'b': '6',
   'o': '0',
@@ -173,6 +172,7 @@ class ProccessCreditCard {
       // 12 / 28". Instead of requiring the line to be exactly a date, search
       // for an MM/YY(YY) pattern anywhere in the text (tolerating spaces around
       // the slash that the recognizer sometimes inserts).
+      List<(String, String)> date_matches = [];
       for (final match in dateSearchFormat.allMatches(text)) {
         String month = match.group(1)!;
         String year = match.group(2)!;
@@ -192,11 +192,26 @@ class ProccessCreditCard {
         if (monthNum == null || monthNum < 1 || monthNum > 12) {
           continue;
         }
+        date_matches.add((month, year));
 
         cardExpirationMonth = month;
         cardExpirationYear = year;
         return fullExpiryDate;
       }
+      if (date_matches.isEmpty)return null;
+      (String, String) latest_match = date_matches[0];
+      for (final (month, year) in date_matches) {
+        int year_new_twoDigits = int.tryParse(year.length >= 4 ? year.substring(2) : year) ?? 0;
+        int year_old_twoDigits = int.tryParse(latest_match.$2.length >= 4 ? latest_match.$2.substring(2) : latest_match.$2) ?? 0;
+        int month_new = int.tryParse(month) ?? 0;
+        int month_old = int.tryParse(latest_match.$1) ?? 0;
+        if (year_new_twoDigits > year_old_twoDigits || (year_new_twoDigits == year_old_twoDigits && month_new > month_old)) {
+          latest_match = (month, year);
+        }
+      }
+      cardExpirationMonth = latest_match.$1;
+      cardExpirationYear = latest_match.$2;
+      return fullExpiryDate;
     }
 
     // Tolerant fallback: when no slash-delimited date was found, the recognizer
