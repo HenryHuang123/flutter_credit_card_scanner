@@ -21,7 +21,7 @@ dependencies:
   apple_vision_recognize_text:
     git:
       url: https://github.com/HenryHuang123/apple_vision.git
-      ref: c2e5fb08bd4f88241a5ef3c2cdb2b64bb325db13
+      ref: 404f47c86285ad262be9c93c563b69fa50c4288a
       path: packages/apple_vision_recognize_text
   credit_card_validator: ^2.1.0
 
