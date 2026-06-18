@@ -22,8 +22,8 @@ EXTERNAL SOURCES:
 SPEC CHECKSUMS:
   apple_vision_recognize_text: bfeefd7756b6f96c40c1b840a444b345a31ff15b
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
-  flutter_credit_card_scanner: cb4e7a58ba2ab4c31f2d64403e0389536c570556
+  flutter_credit_card_scanner: 4960ec4a15db9bc2321252e74a9087b602568e63
 
-PODFILE CHECKSUM: 33a6d1d1667710f79b4363f64bfb26819a55d0d2
+PODFILE CHECKSUM: a57f30d18f102dd3ce366b1d62a55ecbef2158e5
 
 COCOAPODS: 1.16.2

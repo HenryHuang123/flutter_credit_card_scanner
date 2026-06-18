@@ -85,6 +85,15 @@ class CameraScannerWidget extends StatefulWidget {
   /// default is null which means the camera will scan as fast as possible
   final Duration? durationOfNextFrame;
 
+  /// Maximum number of camera frames forwarded to the recognizer each second.
+  ///
+  /// The camera streams frames far faster than OCR can keep up with. Forwarding
+  /// every frame floods the recognizer and makes the preview feel laggy, so
+  /// frames that arrive sooner than `1 / framesPerSecond` after the last
+  /// processed frame are dropped. Defaults to 3 frames per second, which is
+  /// plenty for reading a stationary card.
+  final int framesPerSecond;
+
   /// The resolution preset for the camera. Defaults to [ResolutionPreset.high].
   ///
   /// This can be used to set the resolution of the camera to a lower resolution to improve performance.
@@ -110,6 +119,7 @@ class CameraScannerWidget extends StatefulWidget {
     this.debug = kDebugMode,
     this.durationOfNextFrame,
     this.resolutionPreset,
+    this.framesPerSecond = 3,
   });
 
   @override
@@ -136,6 +146,16 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
 
   /// Flag to prevent multiple simultaneous scans.
   bool scanning = false;
+
+  /// Timestamp of the last frame that was forwarded to the recognizer, used to
+  /// throttle the stream down to [CameraScannerWidget.framesPerSecond].
+  DateTime? _lastFrameTime;
+
+  /// Minimum gap between processed frames, derived from
+  /// [CameraScannerWidget.framesPerSecond].
+  late final Duration _minFrameInterval = Duration(
+    milliseconds: (1000 / widget.framesPerSecond).round(),
+  );
 
   late final _process = ProccessCreditCard(
     useLuhnValidation: widget.useLuhnValidation,
@@ -280,66 +300,47 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
   /// This rebuilds a real NV21 buffer: the full Y (luminance) plane followed by
   /// interleaved V,U chroma, honouring each plane's row and pixel strides so it
   /// works for both planar and semi-planar device layouts.
-  Uint8List _yuv420ToNv21(CameraImage image) {
-    final int width = image.width;
-    final int height = image.height;
-
+  ///
+  /// The conversion is a per-pixel pass over a full-resolution frame, so it runs
+  /// on a background isolate via [compute] to keep the camera preview smooth —
+  /// only the cheap extraction of plane bytes/strides happens on the UI isolate.
+  Future<Uint8List> _buildNv21(CameraImage image) {
     // Single-plane frames are already NV21 (the format we asked for); the
-    // native side strips any row padding, so hand the bytes over unchanged.
+    // native side strips any row padding, so hand the bytes over unchanged and
+    // skip the isolate hop entirely.
     if (image.planes.length < 3) {
-      return image.planes.first.bytes;
+      return Future.value(image.planes.first.bytes);
     }
 
-    final int ySize = width * height;
-    final Uint8List nv21 = Uint8List(ySize + ySize ~/ 2);
-
-    final Plane yPlane = image.planes[0];
-    final Plane uPlane = image.planes[1];
-    final Plane vPlane = image.planes[2];
-
-    // Y plane — copy row by row, dropping any row-stride padding.
-    int dst = 0;
-    final int yRowStride = yPlane.bytesPerRow;
-    if (yRowStride == width) {
-      nv21.setRange(0, ySize, yPlane.bytes);
-      dst = ySize;
-    } else {
-      final Uint8List yBytes = yPlane.bytes;
-      for (int row = 0; row < height; row++) {
-        final int start = row * yRowStride;
-        nv21.setRange(dst, dst + width, yBytes, start);
-        dst += width;
-      }
-    }
-
-    // Chroma — interleave as V, U (NV21 order), honouring row/pixel strides.
-    final Uint8List uBytes = uPlane.bytes;
-    final Uint8List vBytes = vPlane.bytes;
-    final int uRowStride = uPlane.bytesPerRow;
-    final int vRowStride = vPlane.bytesPerRow;
-    final int uPixelStride = uPlane.bytesPerPixel ?? 2;
-    final int vPixelStride = vPlane.bytesPerPixel ?? 2;
-    final int chromaHeight = height ~/ 2;
-    final int chromaWidth = width ~/ 2;
-
-    for (int row = 0; row < chromaHeight; row++) {
-      int uIndex = row * uRowStride;
-      int vIndex = row * vRowStride;
-      for (int col = 0; col < chromaWidth; col++) {
-        // Guard the last sample: on semi-planar layouts the V/U planes can be a
-        // byte short, which would otherwise throw a RangeError.
-        nv21[dst++] = vIndex < vBytes.length ? vBytes[vIndex] : 0;
-        nv21[dst++] = uIndex < uBytes.length ? uBytes[uIndex] : 0;
-        uIndex += uPixelStride;
-        vIndex += vPixelStride;
-      }
-    }
-
-    return nv21;
+    return compute(
+      _yuv420ToNv21Isolate,
+      _Nv21Frame(
+        width: image.width,
+        height: image.height,
+        yBytes: image.planes[0].bytes,
+        uBytes: image.planes[1].bytes,
+        vBytes: image.planes[2].bytes,
+        yRowStride: image.planes[0].bytesPerRow,
+        uRowStride: image.planes[1].bytesPerRow,
+        vRowStride: image.planes[2].bytesPerRow,
+        uPixelStride: image.planes[1].bytesPerPixel ?? 2,
+        vPixelStride: image.planes[2].bytesPerPixel ?? 2,
+      ),
+    );
   }
 
   void process(CameraImage image, CameraDescription description) async {
+    // Drop the frame if a previous one is still being recognized...
     if (scanning) return;
+
+    // ...or if it arrived too soon after the last processed frame. This caps
+    // the work at [framesPerSecond] regardless of how fast the camera streams.
+    final now = DateTime.now();
+    if (_lastFrameTime != null &&
+        now.difference(_lastFrameTime!) < _minFrameInterval) {
+      return;
+    }
+    _lastFrameTime = now;
 
     scanning = true;
 
@@ -387,7 +388,7 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
         // We request an NV21 stream, but many devices ignore that and deliver
         // multi-plane YUV_420_888, so rebuild a guaranteed-packed NV21 buffer
         // here before sending it across.
-        final Uint8List nv21 = _yuv420ToNv21(image);
+        final Uint8List nv21 = await _buildNv21(image);
         final lines = await _channel.invokeListMethod<String>('processImage', {
           'bytes': nv21,
           'width': image.width,
@@ -470,4 +471,78 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
       process(image, description);
     });
   }
+}
+
+/// The plane bytes and strides of a single YUV_420_888 frame, extracted from a
+/// [CameraImage] into a form that can be sent across an isolate boundary
+/// (a [CameraImage] itself is not sendable).
+class _Nv21Frame {
+  final int width;
+  final int height;
+  final Uint8List yBytes;
+  final Uint8List uBytes;
+  final Uint8List vBytes;
+  final int yRowStride;
+  final int uRowStride;
+  final int vRowStride;
+  final int uPixelStride;
+  final int vPixelStride;
+
+  const _Nv21Frame({
+    required this.width,
+    required this.height,
+    required this.yBytes,
+    required this.uBytes,
+    required this.vBytes,
+    required this.yRowStride,
+    required this.uRowStride,
+    required this.vRowStride,
+    required this.uPixelStride,
+    required this.vPixelStride,
+  });
+}
+
+/// Rebuilds a tightly packed NV21 buffer from [frame]. Runs on a background
+/// isolate (see [_WidgetState._buildNv21]) so the per-pixel chroma interleave
+/// never blocks the UI isolate / camera preview.
+Uint8List _yuv420ToNv21Isolate(_Nv21Frame frame) {
+  final int width = frame.width;
+  final int height = frame.height;
+  final int ySize = width * height;
+  final Uint8List nv21 = Uint8List(ySize + ySize ~/ 2);
+
+  // Y plane — copy row by row, dropping any row-stride padding.
+  int dst = 0;
+  if (frame.yRowStride == width) {
+    nv21.setRange(0, ySize, frame.yBytes);
+    dst = ySize;
+  } else {
+    final Uint8List yBytes = frame.yBytes;
+    for (int row = 0; row < height; row++) {
+      final int start = row * frame.yRowStride;
+      nv21.setRange(dst, dst + width, yBytes, start);
+      dst += width;
+    }
+  }
+
+  // Chroma — interleave as V, U (NV21 order), honouring row/pixel strides.
+  final Uint8List uBytes = frame.uBytes;
+  final Uint8List vBytes = frame.vBytes;
+  final int chromaHeight = height ~/ 2;
+  final int chromaWidth = width ~/ 2;
+
+  for (int row = 0; row < chromaHeight; row++) {
+    int uIndex = row * frame.uRowStride;
+    int vIndex = row * frame.vRowStride;
+    for (int col = 0; col < chromaWidth; col++) {
+      // Guard the last sample: on semi-planar layouts the V/U planes can be a
+      // byte short, which would otherwise throw a RangeError.
+      nv21[dst++] = vIndex < vBytes.length ? vBytes[vIndex] : 0;
+      nv21[dst++] = uIndex < uBytes.length ? uBytes[uIndex] : 0;
+      uIndex += frame.uPixelStride;
+      vIndex += frame.vPixelStride;
+    }
+  }
+
+  return nv21;
 }
