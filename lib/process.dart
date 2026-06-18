@@ -15,6 +15,20 @@ String removeNonDigits(String text) {
   return buffer.toString();
 }
 
+/// Formats a digits-only card number into groups of four separated by single
+/// spaces (e.g. "4111111111111111" -> "4111 1111 1111 1111"), normalizing
+/// whatever spacing the recognizer originally produced.
+String groupCardDigits(String digits) {
+  final buffer = StringBuffer();
+  for (int i = 0; i < digits.length; i++) {
+    if (i != 0 && i % 4 == 0) {
+      buffer.write(' ');
+    }
+    buffer.write(digits[i]);
+  }
+  return buffer.toString();
+}
+
 /// A class that processes strings to extract credit card information.
 class ProccessCreditCard {
   /// The extracted credit card number.
@@ -83,16 +97,11 @@ class ProccessCreditCard {
       expirationYear: checkCreditCardExpiryDate ? cardExpirationYear : "",
     );
 
-    if (t.number.isEmpty && checkCreditCardNumber) {
+    if (checkCreditCardNumber && t.number.isEmpty) {
       return null;
     }
 
-    if ((t.expirationMonth.isEmpty || t.expirationYear.isEmpty) &&
-        checkCreditCardExpiryDate) {
-      return null;
-    }
-
-    if (t.holderName.isEmpty && checkCreditCardName) {
+    if (checkCreditCardExpiryDate && (t.expirationMonth.isEmpty || t.expirationYear.isEmpty)) {
       return null;
     }
 
@@ -125,18 +134,17 @@ class ProccessCreditCard {
           year = year.substring(2);
         }
 
-        final fullText = '$month/$year';
-
-        final x = _ccValidator.validateExpDate(fullText);
-        if (x.isValid) {
-          final pdate = parseDate(fullText);
-
-          if (pdate.length >= 2) {
-            cardExpirationMonth = pdate[0];
-            cardExpirationYear = pdate[1];
-          }
-          return fullExpiryDate;
+        // Completion is gated on the *month* validating — a valid month is
+        // 01-12. The year is captured alongside it when present, but is not
+        // required for the scan to be considered complete.
+        final monthNum = int.tryParse(month);
+        if (monthNum == null || monthNum < 1 || monthNum > 12) {
+          continue;
         }
+
+        cardExpirationMonth = month;
+        cardExpirationYear = year;
+        return fullExpiryDate;
       }
     }
 
@@ -182,54 +190,33 @@ class ProccessCreditCard {
       return null;
     }
 
-    if (number.contains("L")) {
-      number = number.replaceAll("L", "1");
+    number = number.toLowerCase();
+
+    // probably want to make this heuristic better
+    if (number.contains("l")) {
+      number = number.replaceAll("l", "1");
     }
 
-    final v = _ccValidator.validateCCNum(number,
-        ignoreLuhnValidation: !useLuhnValidation);
+    // The card number is often embedded in a noisier line alongside labels or
+    // separated into groups by an arbitrary number of spaces/hyphens. Search
+    // for candidate digit runs anywhere in the text rather than requiring the
+    // whole string to be the number, then validate each candidate.
+    for (final match in cardNumberSearch.allMatches(number)) {
+      final candidate = removeNonDigits(match.group(0)!);
 
-    if (v.isValid) {
-      cardNumber = number;
-      _v = v;
+      final v = _ccValidator.validateCCNum(candidate,
+          ignoreLuhnValidation: !useLuhnValidation);
 
-      return cardNumber;
+      if (v.isValid) {
+        // Store a normalized, consistently grouped number instead of the raw
+        // OCR text so the output is independent of the original spacing.
+        cardNumber = groupCardDigits(candidate);
+        _v = v;
+
+        return cardNumber;
+      }
     }
     return null;
-
-    // // remove all non-numeric characters from the input text and keep the numbers
-    // final text = removeNonDigitsKeepSpaces(v);
-
-    // if (text.contains(RegExp(r'[0-9]')) && checkCreditCardNumber) {
-    //   if (text.contains(' ') &&
-    //       int.tryParse(text.replaceAll(" ", "")) != null &&
-    //       text.split(" ").length == 4 &&
-    //       text.split(" ").every((element) => element.length == 4) &&
-    //       text.length > 8) {
-    //     cardNumber = text;
-    //     numberTextList.clear();
-    //   }
-
-    //   if (!onlySpaces) {
-    //     if (v.length == 4 && int.tryParse(v) != null) {
-    //       numberTextList.add(v);
-    //       if (numberTextList.length == 4) {
-    //         cardNumber = numberTextList.join(' ');
-
-    //         numberTextList.clear();
-
-    //         return cardNumber;
-    //       }
-    //     }
-
-    //     if (text.length >= 16 && int.tryParse(text) != null) {
-    //       numberTextList.clear();
-
-    //       cardNumber = text;
-    //     }
-    //   }
-    // }
-    // return cardNumber.isEmpty ? null : cardNumber;
   }
 
   /// Processes the given text to extract credit card information.

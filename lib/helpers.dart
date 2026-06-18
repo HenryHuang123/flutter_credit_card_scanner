@@ -23,6 +23,20 @@ final RegExp expDateFormat = RegExp(r'^((0?([1-9]))|1([0-2]))\/(\d{2,4})$');
 /// (2-4 digits). The month range is validated downstream by the card validator.
 final RegExp dateSearchFormat = RegExp(r'(\d{1,2})\s*\/\s*(\d{2,4})');
 
+/// Searches for a credit-card-number candidate *anywhere* within a larger
+/// string.
+///
+/// Unlike requiring the whole line to be the number, this finds a run of 13–19
+/// digits embedded in a noisier OCR line such as "CARD 4111 1111 1111 1111". It
+/// tolerates an arbitrary number of spaces or hyphens between digits (the text
+/// recognizer is inconsistent about grouping, e.g. "4111  1111 1111-1111").
+///
+/// Letters, slashes and newlines break the run, so surrounding labels or an
+/// adjacent expiry date on another line are not pulled in. Each match is still
+/// Luhn/type validated downstream, so a spurious run that happens to be the
+/// right length is rejected.
+final RegExp cardNumberSearch = RegExp(r'\d(?:[ -]*\d){12,18}');
+
 /// Recognizes all whitespace characters
 final RegExp whiteSpaceRegex = RegExp(r'-|\s+\b|\b\s');
 

@@ -295,6 +295,7 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
           'width': image.width,
           'height': image.height,
           'rotation': description.sensorOrientation,
+          'debug': widget.debug,
         });
 
         if (widget.debug) {
