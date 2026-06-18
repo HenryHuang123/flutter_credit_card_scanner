@@ -50,16 +50,25 @@ class CreditCardScannerPlugin: FlutterPlugin, MethodCallHandler {
     val height = call.argument<Int>("height")
     val rotation = call.argument<Int>("rotation") ?: 0
 
-    //val debug = call.argument<Boolean>("debug") ?: false
-    val debug = false
+    val debug = call.argument<Boolean>("debug") ?: false
 
     if (bytes == null || width == null || height == null) {
       result.error("INVALID_ARGUMENTS", "bytes, width and height are required", null)
       return
     }
 
+    // Row stride of the luminance plane as reported by the camera. Defaults to
+    // the width (i.e. assume no padding) when not provided.
+    val bytesPerRow = call.argument<Int>("bytesPerRow") ?: width
+
+    // ML Kit's NV21 reader assumes a tightly packed buffer (row stride == width).
+    // If the camera delivered the frame with row padding, every row is shifted,
+    // which skews the image diagonally and destroys recognition accuracy — so
+    // strip the padding back to a packed NV21 buffer first.
+    val packed = packNv21IfPadded(bytes, width, height, bytesPerRow)
+
     val image = InputImage.fromByteArray(
-      bytes,
+      packed,
       width,
       height,
       rotation,
@@ -67,7 +76,12 @@ class CreditCardScannerPlugin: FlutterPlugin, MethodCallHandler {
     )
 
     if (debug) {
-      Log.d(TAG, "Processing frame ${width}x${height} rotation=$rotation (NV21, ${bytes.size} bytes)")
+      val expected = width * height * 3 / 2
+      Log.d(
+        TAG,
+        "Processing frame ${width}x${height} rotation=$rotation bytesPerRow=$bytesPerRow " +
+          "(NV21 in=${bytes.size}, packed=${packed.size}, expected=$expected)"
+      )
     }
 
     recognizer.process(image)
@@ -100,6 +114,51 @@ class CreditCardScannerPlugin: FlutterPlugin, MethodCallHandler {
         }
         result.error("TEXT_RECOGNITION_FAILED", e.localizedMessage, null)
       }
+  }
+
+  /// Returns a tightly packed NV21 buffer, stripping row-stride padding when the
+  /// reported [rowStride] is wider than [width].
+  ///
+  /// NV21 is laid out as a luminance (Y) plane of `height` rows followed by an
+  /// interleaved chroma (VU) plane of `height / 2` rows, each row `rowStride`
+  /// bytes wide of which only the first `width` bytes are valid pixels. ML Kit
+  /// expects no padding, so each row is copied down to `width` bytes. If there
+  /// is no padding, or the source is too small to safely repack, the original
+  /// buffer is returned unchanged.
+  private fun packNv21IfPadded(
+    src: ByteArray,
+    width: Int,
+    height: Int,
+    rowStride: Int,
+  ): ByteArray {
+    if (rowStride <= width) {
+      return src
+    }
+
+    val required = rowStride * height + rowStride * (height / 2)
+    if (src.size < required) {
+      // Stride doesn't match the buffer we actually received; don't risk an
+      // out-of-bounds copy — hand the raw bytes to ML Kit as-is.
+      return src
+    }
+
+    val dst = ByteArray(width * height * 3 / 2)
+    var di = 0
+
+    // Y plane: `height` rows.
+    for (row in 0 until height) {
+      System.arraycopy(src, row * rowStride, dst, di, width)
+      di += width
+    }
+
+    // Interleaved VU plane: `height / 2` rows, starting after the Y plane.
+    val chromaStart = rowStride * height
+    for (row in 0 until height / 2) {
+      System.arraycopy(src, chromaStart + row * rowStride, dst, di, width)
+      di += width
+    }
+
+    return dst
   }
 
   override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {

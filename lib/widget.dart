@@ -246,6 +246,19 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
       _process.processDate(line);
     }
 
+    // ML Kit (and Apple Vision) frequently break a single card number or expiry
+    // date into several separate lines. Re-run number/date detection over the
+    // combined text so fragments such as "4111 1111" + "1111 1111" can be
+    // reassembled. Letters break a digit run and each candidate is still
+    // Luhn-validated, so joining the name/date lines in does not produce false
+    // positives. Only attempt this when the per-line pass came up empty so a
+    // value already found in isolation is never clobbered.
+    if (_process.cardNumber.isEmpty || _process.cardExpirationMonth.isEmpty) {
+      final joined = lines.join(' ');
+      if (_process.cardNumber.isEmpty) _process.processNumber(joined);
+      if (_process.cardExpirationMonth.isEmpty) _process.processDate(joined);
+    }
+
     final creditCardModel = _process.getCreditCardModel();
 
     if (creditCardModel != null) {
@@ -256,23 +269,106 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
     }
   }
 
+  /// Converts a [CameraImage] into a tightly packed NV21 byte buffer for ML Kit.
+  ///
+  /// The camera stream is requested as NV21, but many Android devices ignore
+  /// that and deliver multi-plane YUV_420_888 instead. Passing those planes to
+  /// ML Kit as if they were NV21 (the previous behaviour) yields a buffer of
+  /// roughly the right size but the wrong layout — planar YUV rather than NV21's
+  /// interleaved V/U — which is why text was read but almost always wrong.
+  ///
+  /// This rebuilds a real NV21 buffer: the full Y (luminance) plane followed by
+  /// interleaved V,U chroma, honouring each plane's row and pixel strides so it
+  /// works for both planar and semi-planar device layouts.
+  Uint8List _yuv420ToNv21(CameraImage image) {
+    final int width = image.width;
+    final int height = image.height;
+
+    // Single-plane frames are already NV21 (the format we asked for); the
+    // native side strips any row padding, so hand the bytes over unchanged.
+    if (image.planes.length < 3) {
+      return image.planes.first.bytes;
+    }
+
+    final int ySize = width * height;
+    final Uint8List nv21 = Uint8List(ySize + ySize ~/ 2);
+
+    final Plane yPlane = image.planes[0];
+    final Plane uPlane = image.planes[1];
+    final Plane vPlane = image.planes[2];
+
+    // Y plane — copy row by row, dropping any row-stride padding.
+    int dst = 0;
+    final int yRowStride = yPlane.bytesPerRow;
+    if (yRowStride == width) {
+      nv21.setRange(0, ySize, yPlane.bytes);
+      dst = ySize;
+    } else {
+      final Uint8List yBytes = yPlane.bytes;
+      for (int row = 0; row < height; row++) {
+        final int start = row * yRowStride;
+        nv21.setRange(dst, dst + width, yBytes, start);
+        dst += width;
+      }
+    }
+
+    // Chroma — interleave as V, U (NV21 order), honouring row/pixel strides.
+    final Uint8List uBytes = uPlane.bytes;
+    final Uint8List vBytes = vPlane.bytes;
+    final int uRowStride = uPlane.bytesPerRow;
+    final int vRowStride = vPlane.bytesPerRow;
+    final int uPixelStride = uPlane.bytesPerPixel ?? 2;
+    final int vPixelStride = vPlane.bytesPerPixel ?? 2;
+    final int chromaHeight = height ~/ 2;
+    final int chromaWidth = width ~/ 2;
+
+    for (int row = 0; row < chromaHeight; row++) {
+      int uIndex = row * uRowStride;
+      int vIndex = row * vRowStride;
+      for (int col = 0; col < chromaWidth; col++) {
+        // Guard the last sample: on semi-planar layouts the V/U planes can be a
+        // byte short, which would otherwise throw a RangeError.
+        nv21[dst++] = vIndex < vBytes.length ? vBytes[vIndex] : 0;
+        nv21[dst++] = uIndex < uBytes.length ? uBytes[uIndex] : 0;
+        uIndex += uPixelStride;
+        vIndex += vPixelStride;
+      }
+    }
+
+    return nv21;
+  }
+
   void process(CameraImage image, CameraDescription description) async {
     if (scanning) return;
 
     scanning = true;
 
-    final List<int> bytes = image.planes
-        .expand((plane) => plane.bytes)
-        .toList();
+    if (widget.debug) {
+      // Surface the real frame layout. If `planes` is 3 the device handed back
+      // multi-plane YUV_420_888 rather than the single-plane NV21 we requested,
+      // which is why feeding the raw bytes to ML Kit produced garbage.
+      final expectedNv21 = (image.width * image.height * 3) ~/ 2;
+      log(
+        'frame format check: group=${image.format.group} '
+        'planes=${image.planes.length} '
+        'planeBytes=${image.planes.map((p) => p.bytes.length).toList()} '
+        'expectedNV21=$expectedNv21 width=${image.width} '
+        'height=${image.height} '
+        'rowStrides=${image.planes.map((p) => p.bytesPerRow).toList()} '
+        'pixelStrides=${image.planes.map((p) => p.bytesPerPixel).toList()}',
+      );
+    }
 
     try {
       if (Platform.isIOS) {
+        // BGRA8888 on iOS is single-plane.
+        final Uint8List bytes = image.planes.first.bytes;
         final textR = await appleVisionController.processImage(
           apple.RecognizeTextData(
             automaticallyDetectsLanguage: false,
             languages: [const Locale('en', 'US')],
             recognitionLevel: apple.RecognitionLevel.accurate,
-            image: Uint8List.fromList(bytes),
+            image: bytes,
             orientation: appleOrientationFromSensor(
               description.sensorOrientation,
             ),
@@ -288,12 +384,16 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
         }
       } else {
         // Android: run ML Kit text recognition natively through the plugin.
-        // The camera stream is configured as NV21 for Android (see
-        // [_initializeCameraController]).
+        // We request an NV21 stream, but many devices ignore that and deliver
+        // multi-plane YUV_420_888, so rebuild a guaranteed-packed NV21 buffer
+        // here before sending it across.
+        final Uint8List nv21 = _yuv420ToNv21(image);
         final lines = await _channel.invokeListMethod<String>('processImage', {
-          'bytes': Uint8List.fromList(bytes),
+          'bytes': nv21,
           'width': image.width,
           'height': image.height,
+          // The buffer is packed (no row padding), so the stride equals width.
+          'bytesPerRow': image.width,
           'rotation': description.sensorOrientation,
           'debug': widget.debug,
         });
@@ -347,7 +447,13 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
     final CameraController cameraController = CameraController(
       description,
       widget.resolutionPreset ??
-          (Platform.isIOS ? ResolutionPreset.high : ResolutionPreset.high),
+          // Card numbers are small in frame, so a higher capture resolution
+          // gives ML Kit / Apple Vision noticeably more detail to read. Default
+          // Android to 1080p (veryHigh); callers can override (e.g. max) via
+          // [resolutionPreset].
+          (Platform.isIOS
+              ? ResolutionPreset.high
+              : ResolutionPreset.veryHigh),
       enableAudio: false,
       imageFormatGroup: Platform.isAndroid
           ? ImageFormatGroup.nv21

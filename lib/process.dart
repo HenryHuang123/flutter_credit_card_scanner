@@ -15,6 +15,53 @@ String removeNonDigits(String text) {
   return buffer.toString();
 }
 
+/// Returns true if [digits] (a digits-only string) satisfies the Luhn checksum
+/// that payment card numbers use. This is what actually guards against
+/// transcription errors, independent of whether the issuer prefix is one the
+/// bundled validator recognises.
+bool isLuhnValid(String digits) {
+  if (digits.isEmpty) return false;
+  int sum = 0;
+  bool alternate = false;
+  for (int i = digits.length - 1; i >= 0; i--) {
+    final code = digits.codeUnitAt(i);
+    if (code < 0x30 || code > 0x39) return false; // not a digit
+    int n = code - 0x30;
+    if (alternate) {
+      n *= 2;
+      if (n > 9) n -= 9;
+    }
+    sum += n;
+    alternate = !alternate;
+  }
+  return sum % 10 == 0;
+}
+
+/// Characters OCR commonly confuses for digits, mapped to the digit each glyph
+/// most likely represents. The mapping is **case-sensitive** on purpose: an
+/// upper-case "L" is typically a misread 7, whereas a lower-case "l" is a 1.
+const Map<String, String> _ocrDigitConfusions = {
+  'L': '7',
+  'l': '1',
+  'b': '6',
+  'o': '0',
+  'O': '0',
+  'D': '0',
+};
+
+/// Replaces commonly-misread letters with the digit they most likely represent
+/// (see [_ocrDigitConfusions]) so a glyph the recognizer mistook for a letter
+/// still contributes to the card number. Any resulting number is still Luhn
+/// validated, so an incorrect substitution does not produce a false positive.
+String fixOcrDigits(String text) {
+  final buffer = StringBuffer();
+  for (int i = 0; i < text.length; i++) {
+    final char = text[i];
+    buffer.write(_ocrDigitConfusions[char] ?? char);
+  }
+  return buffer.toString();
+}
+
 /// Formats a digits-only card number into groups of four separated by single
 /// spaces (e.g. "4111111111111111" -> "4111 1111 1111 1111"), normalizing
 /// whatever spacing the recognizer originally produced.
@@ -190,12 +237,9 @@ class ProccessCreditCard {
       return null;
     }
 
-    number = number.toLowerCase();
-
-    // probably want to make this heuristic better
-    if (number.contains("l")) {
-      number = number.replaceAll("l", "1");
-    }
+    // Correct common OCR letter/digit confusions (e.g. "L" -> 7, "l" -> 1)
+    // before searching, so misread glyphs are folded back into the digit run.
+    number = fixOcrDigits(number);
 
     // The card number is often embedded in a noisier line alongside labels or
     // separated into groups by an arbitrary number of spaces/hyphens. Search
@@ -207,7 +251,16 @@ class ProccessCreditCard {
       final v = _ccValidator.validateCCNum(candidate,
           ignoreLuhnValidation: !useLuhnValidation);
 
-      if (v.isValid) {
+      // Accept either a number the bundled validator fully recognises (known
+      // issuer), or — since some valid cards use issuer prefixes it doesn't
+      // know about — any candidate of plausible card length that passes the
+      // Luhn checksum. The validator rejects unknown issuer types outright
+      // (before Luhn), which would otherwise drop a legitimate number.
+      final luhnOk = candidate.length >= 13 &&
+          candidate.length <= 19 &&
+          isLuhnValid(candidate);
+
+      if (v.isValid || luhnOk) {
         // Store a normalized, consistently grouped number instead of the raw
         // OCR text so the output is independent of the original spacing.
         cardNumber = groupCardDigits(candidate);
