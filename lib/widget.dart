@@ -69,8 +69,13 @@ class CameraScannerWidget extends StatefulWidget {
   /// Widget to display while the camera is initializing.
   final Widget loadingHolder;
 
+  final Widget? cameraInfoText;
+
   /// Callback function called when no camera is available on the device.
   final void Function() onNoCamera;
+
+  /// The offset of the scan window from the center of the frame, as a fraction of its height.
+  final double centerOffsetY;
 
   /// Aspect ratio for the camera preview. If null, uses the device's screen aspect ratio.
   final double? aspectRatio;
@@ -138,6 +143,8 @@ class CameraScannerWidget extends StatefulWidget {
     required this.onScan,
     required this.loadingHolder,
     required this.onNoCamera,
+    this.centerOffsetY = 0.5,
+    this.cameraInfoText,
     this.aspectRatio,
     this.cardNumber = true,
     this.cardHolder = true,
@@ -208,7 +215,8 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
 
   /// Computes the scan-window crop rectangle and crops frames to it. Its
   /// fractions also drive the on-screen overlay so the two stay in sync.
-  final ScanWindowCropper _cropper = const ScanWindowCropper();
+  late final ScanWindowCropper _cropper =
+      ScanWindowCropper(centerOffsetY: widget.centerOffsetY);
 
   Color get colorOverlay =>
       widget.colorOverlay ?? Colors.black.withValues(alpha: 0.8);
@@ -254,7 +262,17 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
                       height: size.height,
                       color: Colors.black,
                     ),
-                    Center(child: CameraPreview(controller!)),
+                    SizedBox.expand(
+                      child: FittedBox(
+                        fit: BoxFit.cover,
+                        child: 
+                          SizedBox(
+                            width: controller!.value.previewSize!.height,
+                            height: controller!.value.previewSize!.width,
+                            child: CameraPreview(controller!),
+                          ),
+                      ),
+                    ),
 
                     Container(
                       decoration: ShapeDecoration(
@@ -266,8 +284,17 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
                               cutOutWidth: size.width * _cropper.widthFraction,
                               overlayColor: colorOverlay,
                               borderRadius: 20,
+                              centerOffsetY: _cropper.centerOffsetY,
                             ),
                       ),
+                    ),
+                    Positioned(
+                      top: size.height *
+                          (_cropper.centerOffsetY +
+                              _cropper.heightFraction / 2), // just below the cutout
+                      left: 0,
+                      right: 0,
+                      child: widget.cameraInfoText ?? const SizedBox.shrink(),
                     ),
                   ],
                 ),

@@ -129,6 +129,12 @@ class ScanWindowCropper {
   /// Height of the scan window as a fraction of the (display) frame.
   final double heightFraction;
 
+  /// Vertical position of the scan window's *center*, as a fraction down the
+  /// display (0.0 = top edge, 0.5 = middle, 1.0 = bottom edge). The overlay
+  /// cutout, the Android crop and the iOS region-of-interest are all placed to
+  /// match this.
+  final double centerOffsetY;
+
   /// Extra margin added around the scan window before cropping, as a fraction
   /// of its size (0.2 = 20% larger). Gives the user a little leeway so a
   /// slightly misplaced card is still captured.
@@ -137,6 +143,7 @@ class ScanWindowCropper {
   const ScanWindowCropper({
     this.widthFraction = 0.95,
     this.heightFraction = 0.3,
+    this.centerOffsetY = 0.5,
     this.leeway = 0.2,
   });
 
@@ -145,8 +152,9 @@ class ScanWindowCropper {
   ///
   /// The frame is rotated by [sensorOrientation] for display, so for a 90°/270°
   /// sensor the display width maps to the image height and vice-versa; the
-  /// fractions are swapped accordingly. The rect is centered (the overlay is
-  /// centered too) and all coordinates are forced even for NV21 alignment.
+  /// fractions are swapped accordingly. The window is horizontally centered and
+  /// positioned vertically by [centerOffsetY]; all coordinates are forced even
+  /// for NV21 alignment.
   CropRect rectFor(int imageWidth, int imageHeight, int sensorOrientation) {
     final double wFrac = (widthFraction * (1 + leeway)).clamp(0.0, 1.0);
     final double hFrac = (heightFraction * (1 + leeway)).clamp(0.0, 1.0);
@@ -160,8 +168,28 @@ class ScanWindowCropper {
     cropW -= cropW % 2;
     cropH -= cropH % 2;
 
-    int cropX = (imageWidth - cropW) ~/ 2;
-    int cropY = (imageHeight - cropH) ~/ 2;
+    // The display's vertical axis maps to the image's X axis when the frame is
+    // rotated 90°/270° for display, and to the Y axis otherwise. The direction
+    // also reverses for 270°/180°. Translate [centerOffsetY] (a fraction down
+    // the display) into a center fraction along whichever image axis it lands
+    // on; the other axis stays centered.
+    final bool flip = sensorOrientation == 270 || sensorOrientation == 180;
+    final double centerFrac = flip ? 1 - centerOffsetY : centerOffsetY;
+
+    int cropX;
+    int cropY;
+    if (swap) {
+      cropX = (imageWidth * centerFrac - cropW / 2).round();
+      cropY = (imageHeight - cropH) ~/ 2;
+    } else {
+      cropX = (imageWidth - cropW) ~/ 2;
+      cropY = (imageHeight * centerFrac - cropH / 2).round();
+    }
+
+    // Keep the (possibly offset) window inside the frame, then force even
+    // coordinates so the interleaved V,U chroma stays aligned to 2x2 luma.
+    cropX = cropX.clamp(0, imageWidth - cropW);
+    cropY = cropY.clamp(0, imageHeight - cropH);
     cropX -= cropX % 2;
     cropY -= cropY % 2;
 
@@ -171,14 +199,17 @@ class ScanWindowCropper {
   /// The scan window as a normalized [Rect] (0..1) for Apple Vision's
   /// `regionOfInterest`, restricting recognition without cropping the buffer.
   ///
-  /// Centered and expanded by [leeway]. Orientation-independent: Vision applies
-  /// the region in the upright (oriented) image space, where the window is
-  /// always [widthFraction] x [heightFraction], and a centered rect is symmetric
-  /// so the lower-left vs top-left origin makes no difference.
+  /// Horizontally centered, positioned vertically by [centerOffsetY] and
+  /// expanded by [leeway]. Vision applies the region in the upright (oriented)
+  /// image space using a **lower-left** origin, so the window centered
+  /// [centerOffsetY] down from the top sits `1 - centerOffsetY` up from the
+  /// bottom; the rect's bottom edge is half its height below that.
   Rect visionRegionOfInterest() {
     final double w = (widthFraction * (1 + leeway)).clamp(0.0, 1.0);
     final double h = (heightFraction * (1 + leeway)).clamp(0.0, 1.0);
-    return Rect.fromLTWH((1 - w) / 2, (1 - h) / 2, w, h);
+    final double left = ((1 - w) / 2).clamp(0.0, 1.0 - w);
+    final double bottom = (1 - centerOffsetY - h / 2).clamp(0.0, 1.0 - h);
+    return Rect.fromLTWH(left, bottom, w, h);
   }
 
   /// Crops [image] to [rect] on a background isolate, returning a tightly packed

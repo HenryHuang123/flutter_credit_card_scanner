@@ -27,6 +27,10 @@ class OverlayShape extends ShapeBorder {
   /// Bottom offset of the cut out.
   final double cutOutBottomOffset;
 
+  /// Vertical position of the cut-out's center, as a fraction of the available
+  /// height (0.0 = top, 0.5 = middle, 1.0 = bottom).
+  final double centerOffsetY;
+
   OverlayShape({
     this.borderColor = Colors.red,
     this.borderWidth = 4.0,
@@ -37,6 +41,7 @@ class OverlayShape extends ShapeBorder {
     double? cutOutWidth,
     double? cutOutHeight,
     this.cutOutBottomOffset = 0,
+    this.centerOffsetY = 0.5,
   })  : cutOutWidth = cutOutWidth ?? cutOutSize ?? 250,
         cutOutHeight = cutOutHeight ?? cutOutSize ?? 250 {
     assert(
@@ -114,7 +119,7 @@ class OverlayShape extends ShapeBorder {
       rect.left + width / 2 - cutWidth / 2 + borderOffset,
       -cutOutBottomOffset +
           rect.top +
-          height / 2 -
+          height * centerOffsetY -
           cutHeight / 2 +
           borderOffset,
       cutWidth - borderOffset * 2,
@@ -194,6 +199,7 @@ class OverlayShape extends ShapeBorder {
       borderColor: borderColor,
       borderWidth: borderWidth,
       overlayColor: overlayColor,
+      centerOffsetY: centerOffsetY,
     );
   }
 }
