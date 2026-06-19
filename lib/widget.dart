@@ -213,6 +213,23 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
   Color get colorOverlay =>
       widget.colorOverlay ?? Colors.black.withValues(alpha: 0.8);
 
+  /// Diagnostics-only logging that can never break scanning.
+  ///
+  /// `dart:developer`'s [log] writes through the VM Service, which goes away
+  /// when a debug build is detached from its host (e.g. the device is unplugged
+  /// from the machine that ran it). A failed write must not be allowed to abort
+  /// the frame it happens on — most importantly the one that fires [onScan] —
+  /// so every diagnostic log is gated on [CameraScannerWidget.debug] and
+  /// wrapped so any error is swallowed.
+  void _safeLog(String message) {
+    if (!widget.debug) return;
+    try {
+      log(message);
+    } catch (_) {
+      // Logging is best-effort; never let it interrupt a scan.
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.of(context).size;
@@ -290,10 +307,8 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
           _initializeCameraController(c);
         })
         .onError((error, stackTrace) {
-          if (kDebugMode) {
-            log(error.toString());
-            log(stackTrace.toString());
-          }
+          _safeLog(error.toString());
+          _safeLog(stackTrace.toString());
           if (mounted) {
             widget.onNoCamera();
           }
@@ -306,17 +321,20 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
   /// channel) on Android — produce a list of text lines that are fed through the
   /// same extraction pipeline.
   Future<void> onScanLines(List<String> lines) async {
-    if (widget.debug) {
-      for (final line in lines) {
-        log(line);
-      }
+    for (final line in lines) {
+      _safeLog(line);
     }
 
-    // Run the regex + Luhn/validator extraction on a background isolate so the
-    // accept path does zero parsing work on the UI isolate (which is what made
-    // the preview janky whenever text was in view).
-    final result = await compute(
-      _parseLinesIsolate,
+    // Run the regex + Luhn/validator extraction inline on the UI isolate.
+    //
+    // This used to run on a background isolate via compute() to keep the accept
+    // path off the UI isolate, but spawning an isolate is fatal in a detached
+    // iOS debug build: debug builds JIT-compile, iOS only allows JIT while the
+    // debugger is attached, and a freshly spawned isolate must JIT its entry —
+    // so the app crashed the moment it was unplugged. The extraction is a regex
+    // + Luhn pass over a handful of lines a few times a second, so running it
+    // here is cheap and keeps the scanner working detached and in release.
+    final result = _parseLinesIsolate(
       _ParseRequest(
         lines: lines,
         useLuhnValidation: widget.useLuhnValidation,
@@ -394,10 +412,11 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
       expirationYear: widget.cardExpiryDate ? (_lockedYear ?? '') : '',
     );
 
-    if (widget.debug) {
-      log('Scanning locked in card: $model');
-    }
+    // Fire the consumer callback before logging: delivering the scan is the
+    // whole point, and logging is best-effort (see [_safeLog]). Ordering it
+    // first means a logging hiccup can never keep the scan from being reported.
     if (mounted) widget.onScan(context, model);
+    _safeLog('Scanning locked in card: $model');
 
     // Re-arm for the next card.
     _numberHistory.clear();
@@ -428,7 +447,7 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
       // multi-plane YUV_420_888 rather than the single-plane NV21 we requested,
       // which is why feeding the raw bytes to ML Kit produced garbage.
       final expectedNv21 = (image.width * image.height * 3) ~/ 2;
-      log(
+      _safeLog(
         'frame format check: group=${image.format.group} '
         'planes=${image.planes.length} '
         'planeBytes=${image.planes.map((p) => p.bytes.length).toList()} '
@@ -484,7 +503,7 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
         });
 
         if (widget.debug) {
-          log(
+          _safeLog(
             'ML Kit frame ${crop.width}x${crop.height} '
             '(cropped from ${image.width}x${image.height}) '
             'rotation=${description.sensorOrientation} '
