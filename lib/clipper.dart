@@ -135,54 +135,6 @@ class OverlayShape extends ShapeBorder {
         rect,
         backgroundPaint,
       )
-
-      /// Draw top right corner
-      ..drawRRect(
-        RRect.fromLTRBAndCorners(
-          cutOutRect.right - bLength,
-          cutOutRect.top,
-          cutOutRect.right,
-          cutOutRect.top + bLength,
-          topRight: Radius.circular(borderRadius),
-        ),
-        borderPaint,
-      )
-
-      /// Draw top left corner
-      ..drawRRect(
-        RRect.fromLTRBAndCorners(
-          cutOutRect.left,
-          cutOutRect.top,
-          cutOutRect.left + bLength,
-          cutOutRect.top + bLength,
-          topLeft: Radius.circular(borderRadius),
-        ),
-        borderPaint,
-      )
-
-      /// Draw bottom right corner
-      ..drawRRect(
-        RRect.fromLTRBAndCorners(
-          cutOutRect.right - bLength,
-          cutOutRect.bottom - bLength,
-          cutOutRect.right,
-          cutOutRect.bottom,
-          bottomRight: Radius.circular(borderRadius),
-        ),
-        borderPaint,
-      )
-
-      /// Draw bottom left corner
-      ..drawRRect(
-        RRect.fromLTRBAndCorners(
-          cutOutRect.left,
-          cutOutRect.bottom - bLength,
-          cutOutRect.left + bLength,
-          cutOutRect.bottom,
-          bottomLeft: Radius.circular(borderRadius),
-        ),
-        borderPaint,
-      )
       ..drawRRect(
         RRect.fromRectAndRadius(
           cutOutRect,
