@@ -116,6 +116,8 @@ class CameraScannerWidget extends StatefulWidget {
   /// processed frame are dropped. Defaults to 3 frames per second, which is
   /// plenty for reading a stationary card.
   final int framesPerSecond;
+  
+  final int framesUntilNumberLocked;
 
   /// Number of times the same value (card number or expiry date) must be
   /// detected across frames before it is locked in and reported via [onScan].
@@ -156,6 +158,7 @@ class CameraScannerWidget extends StatefulWidget {
     this.durationOfNextFrame,
     this.resolutionPreset,
     this.framesPerSecond = 3,
+    this.framesUntilNumberLocked = 10,
     this.requiredMatches = _kRequiredMatches,
     this.historyLength = _kHistoryLength,
   });
@@ -212,6 +215,8 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
   /// Most recently seen cardholder name. The name is not confirmation-gated
   /// (it is optional for completion); the latest non-empty value is kept.
   String _latestName = '';
+
+  int _scansWithoutDate = 0;
 
   /// Computes the scan-window crop rectangle and crops frames to it. Its
   /// fractions also drive the on-screen overlay so the two stay in sync.
@@ -406,6 +411,14 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
       _latestName = result.name;
     }
 
+    // Once the number is locked in (or isn't being scanned for), start counting
+    // frames spent waiting on a still-missing date so [_maybeEmit] can fall back
+    // to a number-only result after [maxScansWithoutDate] frames.
+    final numberSatisfied = !widget.cardNumber || _lockedNumber != null;
+    if (numberSatisfied && widget.cardExpiryDate && _lockedMonth == null && widget.framesUntilNumberLocked > 0) {
+      _scansWithoutDate++;
+    }
+
     _maybeEmit();
   }
 
@@ -430,7 +443,11 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
   /// confirm the next card (or re-confirm the current one) without any restart.
   void _maybeEmit() {
     if (widget.cardNumber && _lockedNumber == null) return;
-    if (widget.cardExpiryDate && _lockedMonth == null) return;
+    if (widget.cardExpiryDate &&
+        _lockedMonth == null &&
+        _scansWithoutDate < widget.framesUntilNumberLocked) {
+      return;
+    }
 
     final model = CreditCardModel(
       number: widget.cardNumber ? (_lockedNumber ?? '') : '',
@@ -452,6 +469,7 @@ class _CameraScannerWidgetState extends State<CameraScannerWidget>
     _lockedMonth = null;
     _lockedYear = null;
     _latestName = '';
+    _scansWithoutDate = 0;
   }
 
   void process(CameraImage image, CameraDescription description) async {
